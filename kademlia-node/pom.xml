@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.peershare.kademlia</groupId>
+        <artifactId>kademlia</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>kademlia-node</artifactId>
+    <name>Kademlia Node</name>
+
+    <dependencies>
+        <dependency>
+            <groupId>com.peershare.kademlia</groupId>
+            <artifactId>kademlia-api</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.peershare.kademlia</groupId>
+            <artifactId>kademlia-core</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.peershare.kademlia</groupId>
+            <artifactId>kademlia-net</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+    </dependencies>
+</project>

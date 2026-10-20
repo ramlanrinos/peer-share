@@ -39,7 +39,6 @@ jobs:
                 }
               }
             } else {
-              // For opened, edited, or reopened events, evaluate the trigger issue
               issuesToEvaluate.push(triggerIssueNumber);
             }
 
@@ -73,7 +72,6 @@ jobs:
 
               let shouldBeReady = false;
 
-              // If there are NO dependencies, it should be Ready
               if (dependentIssueNumbers.length === 0) {
                 console.log(`No dependencies found for issue #${issueNumber}. Moving directly to Ready.`);
                 shouldBeReady = true;
@@ -169,9 +167,7 @@ jobs:
                   }
                 `;
 
-                const fieldResult = await github.graphql(fieldResultQuery, { projectId }).catch(async () => {
-                  return await github.graphql(getFieldsQuery, { projectId });
-                });
+                const fieldResult = await github.graphql(getFieldsQuery, { projectId });
                 const statusField = fieldResult.node?.fields?.nodes?.find(f => f.name === 'Status');
                 if (!statusField) continue;
 

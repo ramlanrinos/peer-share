@@ -16,162 +16,184 @@ jobs:
           github-token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
           script: |
             const { owner, repo } = context.issue;
-            const issueNumber = context.payload.issue.number;
-            const issueBody = context.payload.issue.body || "";
+            const triggerIssueNumber = context.payload.issue.number;
+            const triggerIssueState = context.payload.issue.state;
 
-            console.log(`Processing issue #${issueNumber}...`);
+            // Determine which issues we need to check/evaluate
+            let issuesToEvaluate = [triggerIssueNumber];
 
-            // Extract all issue references (#123) from the entire body
-            const issueRefRegex = /#(\d+)/g;
-            const matches = [...issueBody.matchAll(issueRefRegex)];
-            
-            // Deduplicate dependency issue numbers and exclude self-references
-            const dependentIssueNumbers = [...new Set(
-              matches
-                .map(match => parseInt(match[1], 10))
-                .filter(num => num !== issueNumber)
-            )];
-
-            if (dependentIssueNumbers.length === 0) {
-              console.log("No dependency issue numbers found.");
-              return;
-            }
-
-            console.log(`Found dependency issues to monitor: ${dependentIssueNumbers.join(', ')}`);
-
-            // Verify state of all referenced dependency issues
-            let allClosed = true;
-            for (const depNum of dependentIssueNumbers) {
-              try {
-                const { data: depIssue } = await github.rest.issues.get({
-                  owner,
-                  repo,
-                  issue_number: depNum
-                });
-                
-                if (depIssue.state !== 'closed') {
-                  allClosed = false;
-                  console.log(`Dependency #${depNum} is still OPEN.`);
-                  break;
-                } else {
-                  console.log(`Dependency #${depNum} is CLOSED.`);
-                }
-              } catch (err) {
-                console.error(`Could not fetch state for dependency #${depNum}:`, err.message);
-                allClosed = false;
-                break;
-              }
-            }
-
-            // GraphQL queries to update the Project Board status
-            if (allClosed) {
-              console.log("All dependency issues are CLOSED! Moving issue to Ready...");
-
-              // Query issue's project item
-              const getProjectItemQuery = `
-                query($owner: String!, $repo: String!, $issueNum: Int!) {
-                  repository(owner: $owner, name: $repo) {
-                    issue(number: $issueNum) {
-                      id
-                      projectItems(first: 10) {
-                        nodes {
-                          id
-                          project {
-                            id
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-              `;
-
-              const projectResult = await github.graphql(getProjectItemQuery, {
+            // If an issue was just closed, find any open issues that depend on it!
+            if (triggerIssueState === 'closed' && context.payload.action === 'closed') {
+              console.log(`Issue #${triggerIssueNumber} was closed. Finding dependent open issues...`);
+              const { data: openIssues } = await github.rest.issues.listForRepo({
                 owner,
                 repo,
-                issueNum: issueNumber
+                state: 'open',
+                per_page: 100
               });
 
-              const projectItems = projectResult.repository.issue?.projectItems?.nodes || [];
-              if (projectItems.length === 0) {
-                console.log("Issue is not associated with any GitHub Project (v2).");
-                return;
+              for (const openIssue of openIssues) {
+                const body = openIssue.body || "";
+                if (body.includes(`#${triggerIssueNumber}`)) {
+                  issuesToEvaluate.push(openIssue.number);
+                }
+              }
+            }
+
+            // Deduplicate issue list
+            issuesToEvaluate = [...new Set(issuesToEvaluate)];
+
+            for (const issueNumber of issuesToEvaluate) {
+              console.log(`\n--- Evaluating issue #${issueNumber} ---`);
+              const { data: issueData } = await github.rest.issues.get({
+                owner,
+                repo,
+                issue_number: issueNumber
+              });
+
+              const issueBody = issueData.body || "";
+
+              // Extract all issue references (#123) from the body
+              const issueRefRegex = /#(\d+)/g;
+              const matches = [...issueBody.matchAll(issueRefRegex)];
+              
+              const dependentIssueNumbers = [...new Set(
+                matches
+                  .map(match => parseInt(match[1], 10))
+                  .filter(num => num !== issueNumber)
+              )];
+
+              if (dependentIssueNumbers.length === 0) {
+                console.log(`No dependencies found for issue #${issueNumber}.`);
+                continue;
               }
 
-              // Target the first project board attached
-              const projectItem = projectItems[0];
-              const projectId = projectItem.project.id;
-              const itemId = projectItem.id;
+              console.log(`Found dependencies for #${issueNumber}: ${dependentIssueNumbers.join(', ')}`);
 
-              // Query Status field & Ready/Backlog option IDs
-              const getFieldsQuery = `
-                query($projectId: ID!) {
-                  node(id: $projectId) {
-                    ... on ProjectV2 {
-                      fields(first: 20) {
-                        nodes {
-                          ... on ProjectV2SingleSelectField {
+              // Verify if all dependencies are closed
+              let allClosed = true;
+              for (const depNum of dependentIssueNumbers) {
+                try {
+                  const { data: depIssue } = await github.rest.issues.get({
+                    owner,
+                    repo,
+                    issue_number: depNum
+                  });
+                  
+                  if (depIssue.state !== 'closed') {
+                    allClosed = false;
+                    console.log(`Dependency #${depNum} is still OPEN.`);
+                    break;
+                  } else {
+                    console.log(`Dependency #${depNum} is CLOSED.`);
+                  }
+                } catch (err) {
+                  console.error(`Could not fetch state for dependency #${depNum}:`, err.message);
+                  allClosed = false;
+                  break;
+                }
+              }
+
+              if (allClosed) {
+                console.log(`All dependencies met for #${issueNumber}! Moving to Ready...`);
+
+                // Query project item
+                const getProjectItemQuery = `
+                  query($owner: String!, $repo: String!, $issueNum: Int!) {
+                    repository(owner: $owner, name: $repo) {
+                      issue(number: $issueNum) {
+                        id
+                        projectItems(first: 10) {
+                          nodes {
                             id
-                            name
-                            options {
+                            project {
                               id
-                              name
                             }
                           }
                         }
                       }
                     }
                   }
+                `;
+
+                const projectResult = await github.graphql(getProjectItemQuery, {
+                  owner,
+                  repo,
+                  issueNum: issueNumber
+                });
+
+                const projectItems = projectResult.repository.issue?.projectItems?.nodes || [];
+                if (projectItems.length === 0) {
+                  console.log(`Issue #${issueNumber} is not on a project board.`);
+                  continue;
                 }
-              `;
 
-              const fieldResult = await github.graphql(getFieldsQuery, { projectId });
-              const statusField = fieldResult.node?.fields?.nodes?.find(f => f.name === 'Status');
+                const projectItem = projectItems[0];
+                const projectId = projectItem.project.id;
+                const itemId = projectItem.id;
 
-              if (!statusField) {
-                console.log("Could not locate 'Status' single-select field in Project.");
-                return;
-              }
-
-              const readyOption = statusField.options.find(o => o.name.toLowerCase() === 'ready');
-              
-              if (!readyOption) {
-                console.log("Could not find 'Ready' option in Status field.");
-                return;
-              }
-
-              // Update item field value to 'Ready'
-              const updateStatusMutation = `
-                mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $value: String!) {
-                  updateProjectV2ItemFieldValue(input: {
-                    projectId: $projectId
-                    itemId: $itemId
-                    fieldId: $fieldId
-                    value: { singleSelectOptionId: $value }
-                  }) {
-                    projectV2Item {
-                      id
+                // Query Status field & Ready option
+                const getFieldsQuery = `
+                  query($projectId: ID!) {
+                    node(id: $projectId) {
+                      ... on ProjectV2 {
+                        fields(first: 20) {
+                          nodes {
+                            ... on ProjectV2SingleSelectField {
+                              id
+                              name
+                              options {
+                                id
+                                name
+                              }
+                            }
+                          }
+                        }
+                      }
                     }
                   }
-                }
-              `;
+                `;
 
-              await github.graphql(updateStatusMutation, {
-                projectId,
-                itemId,
-                fieldId: statusField.id,
-                value: readyOption.id
-              });
+                const fieldResult = await github.graphql(getFieldsQuery, { projectId });
+                const statusField = fieldResult.node?.fields?.nodes?.find(f => f.name === 'Status');
+                if (!statusField) continue;
 
-              console.log("Successfully shifted issue to 'Ready' status!");
+                const readyOption = statusField.options.find(o => o.name.toLowerCase() === 'ready');
+                if (!readyOption) continue;
 
-              // Optional: Add automated confirmation comment
-              await github.rest.issues.createComment({
-                owner,
-                repo,
-                issue_number: issueNumber,
-                body: "🎉 All dependency issues have been closed. Moving issue from **Backlog** to **Ready**!"
-              });
-            } else {
-              console.log("Issue remains in Backlog as pending dependencies are still open.");
+                // Mutation to move to Ready
+                const updateStatusMutation = `
+                  mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $value: String!) {
+                    updateProjectV2ItemFieldValue(input: {
+                      projectId: $projectId
+                      itemId: $itemId
+                      fieldId: $fieldId
+                      value: { singleSelectOptionId: $value }
+                    }) {
+                      projectV2Item {
+                        id
+                      }
+                    }
+                  }
+                `;
+
+                await github.graphql(updateStatusMutation, {
+                  projectId,
+                  itemId,
+                  fieldId: statusField.id,
+                  value: readyOption.id
+                });
+
+                console.log(`Successfully shifted issue #${issueNumber} to 'Ready'!`);
+
+                // Add notification comment
+                await github.rest.issues.createComment({
+                  owner,
+                  repo,
+                  issue_number: issueNumber,
+                  body: "🎉 All dependencies have been closed. Moving issue from **Backlog** to **Ready**!"
+                });
+              } else {
+                console.log(`Issue #${issueNumber} remains in Backlog (pending dependencies).`);
+              }
             }

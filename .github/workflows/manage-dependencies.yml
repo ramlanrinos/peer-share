@@ -21,16 +21,9 @@ jobs:
 
             console.log(`Processing issue #${issueNumber}...`);
 
-            // 1. Isolate the ## Dependencies section if present
-            let textToParse = issueBody;
-            const depHeaderMatch = issueBody.match(/##\s+Dependencies([\s\S]*?)(?=##|$)/i);
-            if (depHeaderMatch) {
-              textToParse = depHeaderMatch[1];
-            }
-
-            // 2. Extract issue references (#123) within the dependencies section
+            // Extract all issue references (#123) from the entire body
             const issueRefRegex = /#(\d+)/g;
-            const matches = [...textToParse.matchAll(issueRefRegex)];
+            const matches = [...issueBody.matchAll(issueRefRegex)];
             
             // Deduplicate dependency issue numbers and exclude self-references
             const dependentIssueNumbers = [...new Set(
@@ -46,7 +39,7 @@ jobs:
 
             console.log(`Found dependency issues to monitor: ${dependentIssueNumbers.join(', ')}`);
 
-            // 3. Verify state of all referenced dependency issues
+            // Verify state of all referenced dependency issues
             let allClosed = true;
             for (const depNum of dependentIssueNumbers) {
               try {
@@ -70,7 +63,7 @@ jobs:
               }
             }
 
-            // 4. GraphQL queries to update the Project Board status
+            // GraphQL queries to update the Project Board status
             if (allClosed) {
               console.log("All dependency issues are CLOSED! Moving issue to Ready...");
 
@@ -177,7 +170,7 @@ jobs:
                 owner,
                 repo,
                 issue_number: issueNumber,
-                body: "🎉 All dependency issues listed under `## Dependencies` have been closed. Moving issue from **Backlog** to **Ready**!"
+                body: "🎉 All dependency issues have been closed. Moving issue from **Backlog** to **Ready**!"
               });
             } else {
               console.log("Issue remains in Backlog as pending dependencies are still open.");

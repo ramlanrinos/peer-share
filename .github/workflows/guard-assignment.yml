@@ -1,4 +1,4 @@
-name: Guard Assignment from Backlog
+name: Guard Assignment and Move to In Progress
 
 on:
   issues:
@@ -10,7 +10,7 @@ jobs:
     permissions:
       issues: write
     steps:
-      - name: Enforce Ready Status for Assignment
+      - name: Enforce Backlog Rule and Shift to In Progress
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
@@ -19,7 +19,6 @@ jobs:
             const issueNumber = context.payload.issue.number;
             const assignees = context.payload.issue.assignees || [];
 
-            // If no assignees are present, skip checking
             if (assignees.length === 0) {
               console.log("No assignees on this issue.");
               return;
@@ -65,20 +64,22 @@ jobs:
               return;
             }
 
+            // Target project item details
+            const projectItem = projectItems[0];
+            const projectId = projectItem.project.id;
+            const itemId = projectItem.id;
+
             // 2. Check if the status field is currently set to 'Backlog'
-            let isBacklog = false;
-            for (const item of projectItems) {
-              for (const val of item.fieldValues?.nodes || []) {
-                if (val.field?.name === 'Status' && val.name === 'Backlog') {
-                  isBacklog = true;
-                  break;
-                }
+            let currentStatus = '';
+            for (const val of projectItem.fieldValues?.nodes || []) {
+              if (val.field?.name === 'Status') {
+                currentStatus = val.name;
+                break;
               }
-              if (isBacklog) break;
             }
 
-            // 3. If it's in Backlog, strip the assignee(s) and leave a warning comment
-            if (isBacklog) {
+            // 3. If in Backlog, BLOCK assignment and strip it
+            if (currentStatus === 'Backlog') {
               console.log("Issue is in Backlog! Removing assignees...");
               
               const usernames = assignees.map(a => a.login);
@@ -93,8 +94,67 @@ jobs:
                 owner,
                 repo,
                 issue_number: issueNumber,
-                body: `**Assignment Blocked:** Tasks cannot be assigned while an issue is still in the **Backlog**. Please clear its dependencies first so it automatically shifts to **Ready**!`
+                body: `⚠️ **Assignment Blocked:** Tasks cannot be assigned while an issue is still in the **Backlog**. Please clear its dependencies first so it automatically shifts to **Ready**!`
               });
-            } else {
-              console.log("Issue is not in Backlog. Assignment allowed.");
+              return;
             }
+
+            // 4. If it's Ready (or anything other than Backlog), move it to 'In Progress'!
+            console.log(`Issue status is '${currentStatus}'. Moving to 'In Progress'...`);
+
+            // Query Status field option IDs to find 'In Progress'
+            const getFieldsQuery = `
+              query($projectId: ID!) {
+                node(id: $projectId) {
+                  ... on ProjectV2 {
+                    fields(first: 20) {
+                      nodes {
+                        ... on ProjectV2SingleSelectField {
+                          id
+                          name
+                          options {
+                            id
+                            name
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            `;
+
+            const fieldResult = await github.graphql(getFieldsQuery, { projectId });
+            const statusField = fieldResult.node?.fields?.nodes?.find(f => f.name === 'Status');
+            if (!statusField) return;
+
+            const inProgressOption = statusField.options.find(o => o.name.toLowerCase() === 'in progress');
+            if (!inProgressOption) {
+              console.log("Could not find 'In Progress' option in Status field.");
+              return;
+            }
+
+            // Mutation to update to In Progress
+            const updateStatusMutation = `
+              mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $value: String!) {
+                updateProjectV2ItemFieldValue(input: {
+                  projectId: $projectId
+                  itemId: $itemId
+                  fieldId: $fieldId
+                  value: { singleSelectOptionId: $value }
+                }) {
+                  projectV2Item {
+                    id
+                  }
+                }
+              }
+            `;
+
+            await github.graphql(updateStatusMutation, {
+              projectId,
+              itemId,
+              fieldId: statusField.id,
+              value: inProgressOption.id
+            });
+
+            console.log("Successfully shifted issue to 'In Progress' status!");

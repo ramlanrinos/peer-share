@@ -9,7 +9,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       issues: write
-      projects: write
     steps:
       - name: Evaluate Dependencies and Update Project Status
         uses: actions/github-script@v7

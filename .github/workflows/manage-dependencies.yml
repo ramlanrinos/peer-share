@@ -21,21 +21,41 @@ jobs:
 
             let issuesToEvaluate = [];
 
-            // If an issue was just closed, DO NOT evaluate the closed issue itself.
-            // Only find open issues that depend on it!
+            // If an issue was just closed, find open issues that depend on it
             if (triggerIssueState === 'closed' && context.payload.action === 'closed') {
               console.log(`Issue #${triggerIssueNumber} was closed. Finding dependent open issues...`);
-              const { data: openIssues } = await github.rest.issues.listForRepo({
-                owner,
-                repo,
-                state: 'open',
-                per_page: 100
-              });
+              
+              let page = 1;
+              let openIssues = [];
+              let fetchMore = true;
+
+              while (fetchMore) {
+                const { data } = await github.rest.issues.listForRepo({
+                  owner,
+                  repo,
+                  state: 'open',
+                  per_page: 100,
+                  page: page
+                });
+                
+                openIssues = openIssues.concat(data);
+                if (data.length < 100) {
+                  fetchMore = false;
+                } else {
+                  page++;
+                }
+              }
 
               for (const openIssue of openIssues) {
                 const body = openIssue.body || "";
-                if (body.includes(`#${triggerIssueNumber}`)) {
-                  issuesToEvaluate.push(openIssue.number);
+                // Match "Depends on: #123" syntax specifically
+                const depRegex = /Depends on:\s*#(\d+)/gi;
+                let match;
+                while ((match = depRegex.exec(body)) !== null) {
+                  if (parseInt(match[1], 10) === triggerIssueNumber) {
+                    issuesToEvaluate.push(openIssue.number);
+                    break;
+                  }
                 }
               }
             } else {
@@ -52,7 +72,6 @@ jobs:
                 issue_number: issueNumber
               });
 
-              // CRITICAL GUARD: Skip evaluation if the issue is closed
               if (issueData.state === 'closed') {
                 console.log(`Issue #${issueNumber} is CLOSED. Skipping project status update.`);
                 continue;
@@ -60,26 +79,28 @@ jobs:
 
               const issueBody = issueData.body || "";
 
-              // Extract all issue references (#123) from the body
-              const issueRefRegex = /#(\d+)/g;
-              const matches = [...issueBody.matchAll(issueRefRegex)];
-              
-              const dependentIssueNumbers = [...new Set(
-                matches
-                  .map(match => parseInt(match[1], 10))
-                  .filter(num => num !== issueNumber)
-              )];
+              // Extract dependencies using strict "Depends on: #123" format
+              const depRegex = /Depends on:\s*#(\d+)/gi;
+              let matches;
+              const dependentIssueNumbers = [];
+              while ((matches = depRegex.exec(issueBody)) !== null) {
+                const num = parseInt(matches[1], 10);
+                if (num !== issueNumber) {
+                  dependentIssueNumbers.push(num);
+                }
+              }
+              const uniqueDeps = [...new Set(dependentIssueNumbers)];
 
               let shouldBeReady = false;
 
-              if (dependentIssueNumbers.length === 0) {
+              if (uniqueDeps.length === 0) {
                 console.log(`No dependencies found for issue #${issueNumber}. Moving directly to Ready.`);
                 shouldBeReady = true;
               } else {
-                console.log(`Found dependencies for #${issueNumber}: ${dependentIssueNumbers.join(', ')}`);
+                console.log(`Found dependencies for #${issueNumber}: ${uniqueDeps.join(', ')}`);
 
                 let allClosed = true;
-                for (const depNum of dependentIssueNumbers) {
+                for (const depNum of uniqueDeps) {
                   try {
                     const { data: depIssue } = await github.rest.issues.get({
                       owner,
@@ -110,7 +131,6 @@ jobs:
               }
 
               if (shouldBeReady) {
-                // Query project item
                 const getProjectItemQuery = `
                   query($owner: String!, $repo: String!, $issueNum: Int!) {
                     repository(owner: $owner, name: $repo) {
@@ -137,7 +157,7 @@ jobs:
 
                 const projectItems = projectResult.repository.issue?.projectItems?.nodes || [];
                 if (projectItems.length === 0) {
-                  console.log(`Issue #${issueNumber} is not on a project board.`);
+                  console.log(`Issue #${issueNumber} is not yet on a project board. Skipping status update.`);
                   continue;
                 }
 
@@ -145,7 +165,6 @@ jobs:
                 const projectId = projectItem.project.id;
                 const itemId = projectItem.id;
 
-                // Query Status field & Ready option
                 const getFieldsQuery = `
                   query($projectId: ID!) {
                     node(id: $projectId) {
@@ -171,10 +190,9 @@ jobs:
                 const statusField = fieldResult.node?.fields?.nodes?.find(f => f.name === 'Status');
                 if (!statusField) continue;
 
-                const readyOption = statusField.options.find(o => o.name.toLowerCase() === 'ready');
+                const readyOption = statusField.options.options || statusField.options.find(o => o.name.toLowerCase() === 'ready');
                 if (!readyOption) continue;
 
-                // Mutation to move to Ready
                 const updateStatusMutation = `
                   mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $value: String!) {
                     updateProjectV2ItemFieldValue(input: {

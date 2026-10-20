@@ -19,10 +19,9 @@ jobs:
             const triggerIssueNumber = context.payload.issue.number;
             const triggerIssueState = context.payload.issue.state;
 
-            // Determine which issues we need to check/evaluate
             let issuesToEvaluate = [triggerIssueNumber];
 
-            // If an issue was just closed, find any open issues that depend on it!
+            // If an issue was just closed, find any open issues that depend on it
             if (triggerIssueState === 'closed' && context.payload.action === 'closed') {
               console.log(`Issue #${triggerIssueNumber} was closed. Finding dependent open issues...`);
               const { data: openIssues } = await github.rest.issues.listForRepo({
@@ -40,7 +39,6 @@ jobs:
               }
             }
 
-            // Deduplicate issue list
             issuesToEvaluate = [...new Set(issuesToEvaluate)];
 
             for (const issueNumber of issuesToEvaluate) {
@@ -63,40 +61,48 @@ jobs:
                   .filter(num => num !== issueNumber)
               )];
 
+              let shouldBeReady = false;
+
+              // RULE: If there are NO dependencies at all, it's immediately ready!
               if (dependentIssueNumbers.length === 0) {
-                console.log(`No dependencies found for issue #${issueNumber}.`);
-                continue;
-              }
+                console.log(`No dependencies found for issue #${issueNumber}. Moving directly to Ready.`);
+                shouldBeReady = true;
+              } else {
+                console.log(`Found dependencies for #${issueNumber}: ${dependentIssueNumbers.join(', ')}`);
 
-              console.log(`Found dependencies for #${issueNumber}: ${dependentIssueNumbers.join(', ')}`);
-
-              // Verify if all dependencies are closed
-              let allClosed = true;
-              for (const depNum of dependentIssueNumbers) {
-                try {
-                  const { data: depIssue } = await github.rest.issues.get({
-                    owner,
-                    repo,
-                    issue_number: depNum
-                  });
-                  
-                  if (depIssue.state !== 'closed') {
+                // Verify if all dependencies are closed
+                let allClosed = true;
+                for (const depNum of dependentIssueNumbers) {
+                  try {
+                    const { data: depIssue } = await github.rest.issues.get({
+                      owner,
+                      repo,
+                      issue_number: depNum
+                    });
+                    
+                    if (depIssue.state !== 'closed') {
+                      allClosed = false;
+                      console.log(`Dependency #${depNum} is still OPEN.`);
+                      break;
+                    } else {
+                      console.log(`Dependency #${depNum} is CLOSED.`);
+                    }
+                  } catch (err) {
+                    console.error(`Could not fetch state for dependency #${depNum}:`, err.message);
                     allClosed = false;
-                    console.log(`Dependency #${depNum} is still OPEN.`);
                     break;
-                  } else {
-                    console.log(`Dependency #${depNum} is CLOSED.`);
                   }
-                } catch (err) {
-                  console.error(`Could not fetch state for dependency #${depNum}:`, err.message);
-                  allClosed = false;
-                  break;
+                }
+
+                if (allClosed) {
+                  console.log(`All dependencies met for #${issueNumber}!`);
+                  shouldBeReady = true;
+                } else {
+                  console.log(`Issue #${issueNumber} remains in Backlog (pending dependencies).`);
                 }
               }
 
-              if (allClosed) {
-                console.log(`All dependencies met for #${issueNumber}! Moving to Ready...`);
-
+              if (shouldBeReady) {
                 // Query project item
                 const getProjectItemQuery = `
                   query($owner: String!, $repo: String!, $issueNum: Int!) {
@@ -185,15 +191,5 @@ jobs:
                 });
 
                 console.log(`Successfully shifted issue #${issueNumber} to 'Ready'!`);
-
-                // Add notification comment
-                await github.rest.issues.createComment({
-                  owner,
-                  repo,
-                  issue_number: issueNumber,
-                  body: "🎉 All dependencies have been closed. Moving issue from **Backlog** to **Ready**!"
-                });
-              } else {
-                console.log(`Issue #${issueNumber} remains in Backlog (pending dependencies).`);
               }
             }

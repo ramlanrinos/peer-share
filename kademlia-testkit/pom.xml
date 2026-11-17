@@ -19,11 +19,11 @@
             <artifactId>kademlia-api</artifactId>
             <version>${project.version}</version>
         </dependency>
-        <!-- JUnit 5 Jupiter Aggregator -->
+        <!-- JUnit 5: compile scope so contract tests in src/main/java can use it -->
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>
-            <scope>test</scope>
+            <scope>compile</scope>
         </dependency>
 
         <!-- Mockito for testing -->
